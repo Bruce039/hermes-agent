@@ -18,14 +18,19 @@ MAX_SCAN_CHARS = 65_536
 # Bounded filler between key attack words (unbounded ``(?:\w+\s+)*`` backtracks badly).
 _FILLER = r"(?:\w+\s+){0,8}"
 
-# ``rm -rf`` rooted at "/", shared by skills_guard and the cron prompt scan. Cleanup under
-# the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in test/smoke scripts,
-# CI and scheduled jobs. A parent segment inside an exempted root can escape it, so it
-# remains destructive along with every other path rooted at "/".
+# ``rm -rf`` rooted at "/", shared by skills_guard and the cron prompt scan.
+# Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
+# test/smoke scripts and CI, and so is the package-cache cleanup that ends every Dockerfile
+# install layer (`rm -rf /var/lib/apt/lists/*`, /var/cache/{apt,apk,yum,dnf}). A parent
+# segment inside an exempted root can escape it, so it remains destructive along with every
+# other path rooted at "/". Every operand is checked (`rm -rf /tmp/x /etc`,
+# `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
+# comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
+# checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
 DESTRUCTIVE_ROOT_RM = (
-    r'rm\s+-rf\s+/(?:'
-    r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
-    r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))'
+    r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?(1)(?!/(?:\s|$)))(?:'
+    r'(?!(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))(?:\b|/))'
+    r'|(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))'
 )
 
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
@@ -33,7 +38,7 @@ _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
-_PATTERNS: List[Tuple[str, str, str]] = [
+_PATTERNS: list[tuple[str, str, str]] = [
     # ── Classic prompt injection (applies everywhere) ────────────────
     (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
@@ -126,8 +131,8 @@ INVISIBLE_CHARS = frozenset(
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}
 
 
-def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
-    compiled: dict[str, List[Tuple[re.Pattern, str]]] = {"all": [], "context": [], "strict": []}
+def _compile() -> dict[str, list[tuple[re.Pattern, str]]]:
+    compiled: dict[str, list[tuple[re.Pattern, str]]] = {"all": [], "context": [], "strict": []}
     for pattern, pid, scope in _PATTERNS:
         if scope not in _SCOPE_SETS:
             raise ValueError(f"threat_patterns: unknown scope {scope!r} for pattern {pid!r}")
@@ -139,7 +144,7 @@ def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
 _COMPILED = _compile()
 
 
-def scan_for_threats(content: str, scope: str = "context") -> List[str]:
+def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
     reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
     if not content:
@@ -148,7 +153,7 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    findings: List[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
+    findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
@@ -170,4 +175,4 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "scan_for_threats", "first_threat_message"]
+__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "scan_for_threats"]
